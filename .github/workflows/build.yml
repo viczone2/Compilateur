@@ -24,6 +24,10 @@ on:
         description: Commande personnalisee
         required: false
         default: ''
+      gradle:
+        description: Version de Gradle
+        required: false
+        default: '8.8'
 permissions:
   contents: write
 jobs:
@@ -42,6 +46,9 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ inputs.java }}
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ inputs.gradle }}
       - name: Compiler
         run: |
           set +e
