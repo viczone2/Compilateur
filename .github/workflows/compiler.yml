@@ -1,0 +1,75 @@
+name: Compiler
+on:
+  push:
+    paths:
+      - 'sources/**'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Compiler
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            set -e
+            Z=$(ls -t sources/*.zip | head -1)
+            mkdir -p work out
+            unzip -q "$Z" -d work
+            cd work
+            while [ "$(ls -A | wc -l)" -eq 1 ] && [ -d "$(ls -A)" ]; do cd "$(ls -A)"; done
+            if [ -f pom.xml ]; then
+              mvn -B package -DskipTests
+            elif ls build.gradle* settings.gradle* app/build.gradle* >/dev/null 2>&1; then
+              if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
+              if grep -qs "com.android" build.gradle* settings.gradle* app/build.gradle* ; then
+                $G assembleDebug --no-daemon --console=plain
+              else
+                $G build -x test --no-daemon --console=plain
+              fi
+            else
+              echo "Projet non reconnu (pas de pom.xml ni de build.gradle)"; exit 1
+            fi
+            find . -path '*outputs/apk*' -name '*.apk' -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+            find . \( -path '*/build/libs/*' -o -path '*/target/*' \) -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name 'original-*' -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+            [ -n "$(ls -A "$GITHUB_WORKSPACE/out")" ] || { echo "Aucun fichier .apk ou .jar produit"; exit 1; }
+          } 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+      - name: Publier le résultat
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          touch build.log; mkdir -p out
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            S="STATUT: OK"; tail -n 20 build.log > notes.txt
+          else
+            S="STATUT: ECHEC"
+            N=$(grep -n -m1 -E 'error:|ERROR|FAILED|What went wrong|BUILD FAILURE' build.log | cut -d: -f1 || true)
+            if [ -n "$N" ]; then tail -n +"$N" build.log | head -n 80 > notes.txt; else tail -n 80 build.log > notes.txt; fi
+          fi
+          { echo "$S"; echo; cat notes.txt; } > release.md
+          FILES=$(ls out/* 2>/dev/null || true)
+          gh release create "build-${{ github.run_number }}" $FILES --title "Build ${{ github.run_number }}" --notes-file release.md
+      - name: Supprimer le code source du dépôt
+        if: always()
+        run: |
+          git config user.name "compilateur"
+          git config user.email "compilateur@users.noreply.github.com"
+          git rm -q -r sources || true
+          git commit -m "Nettoyage des sources" || true
+          git push || true
+      - name: Marquer l'échec
+        if: steps.build.outcome == 'failure'
+        run: exit 1
